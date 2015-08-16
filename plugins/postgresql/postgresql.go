@@ -8,13 +8,20 @@ import (
 	_ "github.com/lib/pq"
 )
 
+type Query struct {
+    Identifier string
+    Sql string
+}
+
 type Server struct {
 	Address   string
 	Databases []string
+    Queries []string
 }
 
 type Postgresql struct {
 	Servers []*Server
+    QueriesDefinition []Query
 }
 
 var sampleConfig = `
@@ -40,6 +47,17 @@ address = "sslmode=disable"
 
 # [[postgresql.servers]]
 # address = "influx@remoteserver"
+
+# A list of queries to execute for this server
+# queries = ["indexes_size", "tables_size"]
+
+# Queries definition
+# [[postgresql.queriesdefinition]]
+# identifier = "tables_size"
+# sql = "select * from pg_class"
+# [[postgresql.queriesdefinition]]
+# identifier = "indexes_size"
+# sql = "select * from pg_class"
 `
 
 func (p *Postgresql) SampleConfig() string {
@@ -60,6 +78,13 @@ func (p *Postgresql) Gather(acc plugins.Accumulator) error {
 
 	for _, serv := range p.Servers {
 		err := p.gatherServer(serv, acc)
+		if err != nil {
+			return err
+		}
+	}
+
+	for _, serv := range p.Servers {
+		err := p.gatherServerQueries(serv, acc, &p.QueriesDefinition)
 		if err != nil {
 			return err
 		}
@@ -107,6 +132,39 @@ func (p *Postgresql) gatherServer(serv *Server, acc plugins.Accumulator) error {
 		}
 	}
 
+	return nil
+}
+
+func (p *Postgresql) gatherServerQueries(serv *Server, acc plugins.Accumulator, queries *[]Query) error {
+	if serv.Address == "" || serv.Address == "localhost" {
+		serv = localhost
+	}
+
+    queries_map := make(map[string]Query)
+    for _, query := range *queries {
+        queries_map[query.Identifier] = query 
+    }
+
+    for _, database_name := range serv.Databases {
+        db, err := sql.Open(database_name, serv.Address)
+        if err != nil {
+            return err
+        }
+        defer db.Close()
+        for _, query_id := range serv.Queries {
+            rows, err := db.Query(queries_map[query_id].Sql)
+            if err != nil {
+                return err
+            }
+
+            defer rows.Close()
+            
+            for rows.Next() {
+                // Acumulate row            
+            }
+        }
+    }
+    
 	return nil
 }
 
