@@ -1,9 +1,10 @@
 package postgresql
 
 import (
+    "fmt"
 	"database/sql"
 
-	"github.com/influxdb/telegraf/plugins"
+	"github.com/pablrod/telegraf/plugins"
 
 	_ "github.com/lib/pq"
 )
@@ -11,6 +12,8 @@ import (
 type Query struct {
     Identifier string
     Sql string
+    Tags []string
+    Values []string
 }
 
 type Server struct {
@@ -21,7 +24,7 @@ type Server struct {
 
 type Postgresql struct {
 	Servers []*Server
-    QueriesDefinition []Query
+    Queriesdefinition []Query
 }
 
 var sampleConfig = `
@@ -54,7 +57,9 @@ address = "sslmode=disable"
 # Queries definition
 # [[postgresql.queriesdefinition]]
 # identifier = "tables_size"
-# sql = "select * from pg_class"
+# sql = "select (select nspname from pg_catalog.pg_namespace where oid = pg_class.relnamespace) as schema, relname as table, pg_total_relation_size(oid) as bytes from pg_catalog.pg_class where relnamespace not in (select oid from pg_catalog.pg_namespace where nspname like 'pg_%') and pg_total_relation_size(oid) > 1024*1024*1024 order by pg_total_relation_size(oid) desc"
+# tags =["schema", "table"]
+# values = ["bytes"]
 # [[postgresql.queriesdefinition]]
 # identifier = "indexes_size"
 # sql = "select * from pg_class"
@@ -71,20 +76,21 @@ func (p *Postgresql) Description() string {
 var localhost = &Server{Address: "sslmode=disable"}
 
 func (p *Postgresql) Gather(acc plugins.Accumulator) error {
+
 	if len(p.Servers) == 0 {
 		p.gatherServer(localhost, acc)
 		return nil
 	}
 
-	for _, serv := range p.Servers {
-		err := p.gatherServer(serv, acc)
-		if err != nil {
-			return err
-		}
-	}
+	//for _, serv := range p.Servers {
+    //		err := p.gatherServer(serv, acc)
+    //		if err != nil {
+    //			return err
+    //		}
+	//}
 
 	for _, serv := range p.Servers {
-		err := p.gatherServerQueries(serv, acc, &p.QueriesDefinition)
+		err := p.gatherServerQueries(serv, acc, &p.Queriesdefinition)
 		if err != nil {
 			return err
 		}
@@ -140,18 +146,25 @@ func (p *Postgresql) gatherServerQueries(serv *Server, acc plugins.Accumulator, 
 		serv = localhost
 	}
 
+    fmt.Println(serv.Queries)
+
     queries_map := make(map[string]Query)
     for _, query := range *queries {
         queries_map[query.Identifier] = query 
     }
 
     for _, database_name := range serv.Databases {
-        db, err := sql.Open(database_name, serv.Address)
+        fmt.Println(serv.Address)
+        fmt.Println(database_name)
+        db, err := sql.Open("postgres", serv.Address)
         if err != nil {
+            fmt.Println(err)
             return err
         }
         defer db.Close()
         for _, query_id := range serv.Queries {
+            fmt.Println("Consulta: ")
+            fmt.Println(queries_map[query_id].Sql)
             rows, err := db.Query(queries_map[query_id].Sql)
             if err != nil {
                 return err
@@ -160,7 +173,13 @@ func (p *Postgresql) gatherServerQueries(serv *Server, acc plugins.Accumulator, 
             defer rows.Close()
             
             for rows.Next() {
-                // Acumulate row            
+                // Acumulate row
+                var schema_name string
+                var table_name string
+                var size_in_bytes float64
+                rows.Scan(&schema_name, &table_name, &size_in_bytes)    
+                tags := map[string]string{"db": database_name, "schema": schema_name, "table": table_name}
+                acc.Add("size", size_in_bytes, tags) 
             }
         }
     }
